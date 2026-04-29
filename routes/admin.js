@@ -10,6 +10,22 @@ const Order = require('../models/Order');
 const Payroll = require('../models/Payroll');
 const Activity = require('../models/Activity');
 
+// ========== HELPER FUNCTION ==========
+function getRelativeTime(date) {
+    const now = new Date();
+    const diff = now - new Date(date);
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+    if (hours < 24) return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return `${days} days ago`;
+    return new Date(date).toLocaleDateString();
+}
+
 
 // All routes require authentication and admin role
 router.use(authenticateToken);
@@ -902,62 +918,62 @@ router.put('/orders/:id', async (req, res) => {
 // @desc    Get all orders
 // @access  Private (Admin)
 router.get('/orders', async (req, res) => {
-  try {
-    const Order = require('../models/Order');
-    const orders = await Order.find()
-      .populate('customerId', 'firstName lastName email')
-      .sort({ createdAt: -1 });
+    try {
+        const Order = require('../models/Order');
+        const orders = await Order.find()
+            .populate('customerId', 'firstName lastName email')
+            .sort({ createdAt: -1 });
 
-    const data = orders.map(o => ({
-      _id: o._id,
-      orderNumber: o.orderNumber,
-      customerName: o.customerName || (o.customerId ? `${o.customerId.firstName} ${o.customerId.lastName}` : 'N/A'),
-      customerEmail: o.customerEmail || o.customerId?.email || '',
-      items: o.items,
-      totalAmount: o.totalAmount,
-      status: o.status,
-      shippingAddress: o.shippingAddress,
-      notes: o.notes,
-      paymentMethod: o.paymentMethod,
-      createdAt: o.createdAt
-    }));
+        const data = orders.map(o => ({
+            _id: o._id,
+            orderNumber: o.orderNumber,
+            customerName: o.customerName || (o.customerId ? `${o.customerId.firstName} ${o.customerId.lastName}` : 'N/A'),
+            customerEmail: o.customerEmail || o.customerId?.email || '',
+            items: o.items,
+            totalAmount: o.totalAmount,
+            status: o.status,
+            shippingAddress: o.shippingAddress,
+            notes: o.notes,
+            paymentMethod: o.paymentMethod,
+            createdAt: o.createdAt
+        }));
 
-    res.json({ success: true, data });
-  } catch (error) {
-    console.error('Orders fetch error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Orders fetch error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 // @route   PUT /api/admin/orders/:id
 // @desc    Update order status
 // @access  Private (Admin)
 router.put('/orders/:id', async (req, res) => {
-  try {
-    const Order = require('../models/Order');
-    const order = await Order.findByIdAndUpdate(
-      req.params.id,
-      { status: req.body.status },
-      { new: true }
-    );
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    try {
+        const Order = require('../models/Order');
+        const order = await Order.findByIdAndUpdate(
+            req.params.id,
+            { status: req.body.status },
+            { new: true }
+        );
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-    // Log activity
-    const Activity = require('../models/Activity');
-    await Activity.log({
-      type: 'order',
-      action: req.body.status,
-      description: `Order ${order.orderNumber} status updated to ${req.body.status}`,
-      userId: req.user.id,
-      userName: 'Admin',
-      targetId: order._id,
-      targetType: 'Order'
-    });
+        // Log activity
+        const Activity = require('../models/Activity');
+        await Activity.log({
+            type: 'order',
+            action: req.body.status,
+            description: `Order ${order.orderNumber} status updated to ${req.body.status}`,
+            userId: req.user.id,
+            userName: 'Admin',
+            targetId: order._id,
+            targetType: 'Order'
+        });
 
-    res.json({ success: true, message: 'Order updated', data: order });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+        res.json({ success: true, message: 'Order updated', data: order });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 // ========== SPECIALS MANAGEMENT ==========
