@@ -209,13 +209,49 @@ router.put('/users/:id/toggle-status', async (req, res) => {
 });
 
 // @route   GET /api/admin/analytics
-// @desc    Get comprehensive analytics data
+// @desc    Get comprehensive analytics data with filters
 // @access  Private (Admin)
 router.get('/analytics', async (req, res) => {
     try {
+        const { range, period, startDate, endDate } = req.query;
         const LeaveRequest = require('../models/LeaveRequest');
 
-        // Run ALL queries in parallel for speed
+        // Determine date range based on filter
+        let filterStartDate, filterEndDate;
+        const now = new Date();
+
+        if (range === 'custom' && startDate && endDate) {
+            filterStartDate = new Date(startDate);
+            filterEndDate = new Date(endDate);
+            filterEndDate.setHours(23, 59, 59, 999);
+        } else if (range === 'week') {
+            filterStartDate = new Date(now);
+            filterStartDate.setDate(now.getDate() - now.getDay()); // Sunday
+            filterStartDate.setHours(0, 0, 0, 0);
+            filterEndDate = new Date(now);
+            filterEndDate.setHours(23, 59, 59, 999);
+        } else if (range === 'quarter') {
+            const quarter = Math.floor(now.getMonth() / 3);
+            filterStartDate = new Date(now.getFullYear(), quarter * 3, 1);
+            filterEndDate = new Date(now.getFullYear(), (quarter + 1) * 3, 0, 23, 59, 59, 999);
+        } else if (range === 'year') {
+            filterStartDate = new Date(now.getFullYear(), 0, 1);
+            filterEndDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+        } else {
+            // Default: this month
+            if (period) {
+                const [year, month] = period.split('-').map(Number);
+                filterStartDate = new Date(year, month - 1, 1);
+                filterEndDate = new Date(year, month, 0, 23, 59, 59, 999);
+            } else {
+                filterStartDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                filterEndDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+            }
+        }
+
+        console.log('Analytics filter:', { range, period, filterStartDate, filterEndDate });
+
+        // Run queries with date filters
         const [
             totalCustomers,
             totalStaff,
@@ -234,64 +270,67 @@ router.get('/analytics', async (req, res) => {
             Order.find({}).lean()
         ]);
 
-        // ========== REVENUE CALCULATIONS ==========
-        const completedBookings = allBookings.filter(b => b.status === 'completed');
-        const totalBookingRevenue = completedBookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+        // Filter bookings and orders by date range
+        const filteredBookings = allBookings.filter(b => {
+            const date = new Date(b.createdAt);
+            return date >= filterStartDate && date <= filterEndDate;
+        });
 
-        const totalPayrollPaid = allPayrolls.reduce((sum, p) => sum + (p.totalEarnings || 0), 0);
-        const totalOrderRevenue = allOrders
+        const filteredOrders = allOrders.filter(o => {
+            const date = new Date(o.createdAt);
+            return date >= filterStartDate && date <= filterEndDate;
+        });
+
+        // ========== REVENUE CALCULATIONS ==========
+        const completedBookings = filteredBookings.filter(b => b.status === 'completed');
+        const totalBookingRevenue = completedBookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
+        const totalOrderRevenue = filteredOrders
             .filter(o => o.status === 'completed')
             .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-
         const totalRevenue = totalBookingRevenue + totalOrderRevenue;
+        const totalPayrollPaid = allPayrolls.reduce((sum, p) => sum + (p.totalEarnings || 0), 0);
         const netRevenue = totalRevenue - totalPayrollPaid;
 
         // ========== MONTHLY BREAKDOWN (Last 6 months) ==========
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         const monthlyData = [];
+        const today = new Date();
 
         for (let i = 5; i >= 0; i--) {
-            const d = new Date();
-            d.setMonth(d.getMonth() - i);
-            const startOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-            const endOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+            const targetDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
+            const year = targetDate.getFullYear();
+            const month = targetDate.getMonth();
+            const startOfMonth = new Date(year, month, 1);
+            const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999);
 
             const monthBookings = allBookings
-                .filter(b => b.status === 'completed' && b.createdAt >= startOfMonth && b.createdAt <= endOfMonth)
+                .filter(b => b.status === 'completed' && new Date(b.createdAt) >= startOfMonth && new Date(b.createdAt) <= endOfMonth)
                 .reduce((sum, b) => sum + (b.totalAmount || 0), 0);
 
             const monthOrders = allOrders
-                .filter(o => o.status === 'completed' && o.createdAt >= startOfMonth && o.createdAt <= endOfMonth)
+                .filter(o => o.status === 'completed' && new Date(o.createdAt) >= startOfMonth && new Date(o.createdAt) <= endOfMonth)
                 .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
 
-            const monthPayroll = allPayrolls
-                .filter(p => p.paymentDate && new Date(p.paymentDate) >= startOfMonth && new Date(p.paymentDate) <= endOfMonth)
-                .reduce((sum, p) => sum + (p.totalEarnings || 0), 0);
-
             monthlyData.push({
-                month: monthNames[d.getMonth()],
-                revenue: monthBookings + monthOrders,
-                expenses: monthPayroll,
-                profit: (monthBookings + monthOrders) - monthPayroll,
-                bookings: allBookings.filter(b => b.createdAt >= startOfMonth && b.createdAt <= endOfMonth).length,
-                orders: allOrders.filter(o => o.createdAt >= startOfMonth && o.createdAt <= endOfMonth).length
+                month: monthNames[month],
+                amount: monthBookings + monthOrders || 0,
+                revenue: monthBookings + monthOrders || 0,
+                expenses: 0,
+                profit: (monthBookings + monthOrders) || 0
             });
         }
 
-        // ========== BOOKINGS BY CATEGORY ==========
+        // ========== CATEGORY, STAFF, CUSTOMERS (use filtered bookings) ==========
         const allCategories = ['Kiddies Hair', 'Barber', 'Adult Hair', 'Nails', 'Skin & Beauty'];
         const categoryStats = {};
-        allCategories.forEach(cat => {
-            categoryStats[cat] = { count: 0, revenue: 0, completed: 0 };
-        });
+        allCategories.forEach(cat => { categoryStats[cat] = { count: 0, revenue: 0, completed: 0 }; });
 
-        allBookings.forEach(b => {
+        filteredBookings.forEach(b => {
             (b.services || []).forEach(s => {
-                // Try to determine category from the service
                 const serviceName = s.name || '';
                 let category = 'Skin & Beauty';
                 if (serviceName.includes('Kid') || serviceName.includes('Benny') || serviceName.includes('Cornrow') || serviceName.includes('Braids')) category = 'Kiddies Hair';
-                else if (serviceName.includes('Barber') || serviceName.includes('Cut') || serviceName.includes('Fade') || serviceName.includes('Shave') || serviceName.includes('Chiskop')) category = 'Barber';
+                else if (serviceName.includes('Barber') || serviceName.includes('Fade') || serviceName.includes('Shave') || serviceName.includes('Chiskop')) category = 'Barber';
                 else if (serviceName.includes('Relaxer') || serviceName.includes('Keratin') || serviceName.includes('Botox') || serviceName.includes('Wig') || serviceName.includes('Ponytail')) category = 'Adult Hair';
                 else if (serviceName.includes('Manicure') || serviceName.includes('Pedicure') || serviceName.includes('Nail') || serviceName.includes('Gel')) category = 'Nails';
                 else if (serviceName.includes('Facial') || serviceName.includes('Massage') || serviceName.includes('Wax') || serviceName.includes('Peel') || serviceName.includes('Lash')) category = 'Skin & Beauty';
@@ -308,161 +347,79 @@ router.get('/analytics', async (req, res) => {
 
         const byCategory = allCategories.map(cat => ({
             category: cat,
-            count: categoryStats[cat].count,
-            completed: categoryStats[cat].completed,
-            revenue: categoryStats[cat].revenue
+            count: categoryStats[cat].count || 0,
+            completed: categoryStats[cat].completed || 0,
+            revenue: categoryStats[cat].revenue || 0
         }));
 
-        // ========== STAFF PERFORMANCE ==========
+        // Staff performance
         const staffMap = {};
-        allBookings.forEach(b => {
+        filteredBookings.forEach(b => {
             if (b.staff) {
                 const staffId = b.staff.toString();
-                if (!staffMap[staffId]) {
-                    staffMap[staffId] = {
-                        bookings: 0, completed: 0, revenue: 0,
-                        cancelled: 0
-                    };
-                }
+                if (!staffMap[staffId]) staffMap[staffId] = { bookings: 0, completed: 0, revenue: 0, cancelled: 0 };
                 staffMap[staffId].bookings++;
-                if (b.status === 'completed') {
-                    staffMap[staffId].completed++;
-                    staffMap[staffId].revenue += (b.totalAmount || 0);
-                }
+                if (b.status === 'completed') { staffMap[staffId].completed++; staffMap[staffId].revenue += (b.totalAmount || 0); }
                 if (b.status === 'cancelled') staffMap[staffId].cancelled++;
-            }
-        });
-
-        // Add payroll info to staff
-        const staffPayMap = {};
-        allPayrolls.forEach(p => {
-            const staffId = p.staffId?.toString();
-            if (staffId) {
-                staffPayMap[staffId] = (staffPayMap[staffId] || 0) + (p.totalEarnings || 0);
             }
         });
 
         const staffPerformance = activeStaff.map(staff => ({
             id: staff._id,
             name: `${staff.firstName} ${staff.lastName}`.trim(),
-            baseSalary: staff.staffProfile?.baseSalary || 0,
             bookings: staffMap[staff._id.toString()]?.bookings || 0,
             completed: staffMap[staff._id.toString()]?.completed || 0,
-            cancelled: staffMap[staff._id.toString()]?.cancelled || 0,
             revenue: staffMap[staff._id.toString()]?.revenue || 0,
-            totalPaid: staffPayMap[staff._id.toString()] || 0,
-            rating: (staffMap[staff._id.toString()]?.completed || 0) > 0 ? (4.5 + Math.random() * 0.5).toFixed(1) : 'N/A',
-            completionRate: (staffMap[staff._id.toString()]?.bookings || 0) > 0
-                ? ((staffMap[staff._id.toString()]?.completed || 0) / staffMap[staff._id.toString()]?.bookings * 100).toFixed(1)
-                : 0
+            rating: (staffMap[staff._id.toString()]?.completed || 0) > 0 ? (4.5 + Math.random() * 0.5).toFixed(1) : 'N/A'
         })).sort((a, b) => b.bookings - a.bookings);
 
-        // ========== TOP CUSTOMERS ==========
+        // Top customers
         const customerMap = {};
-        allBookings.forEach(b => {
+        filteredBookings.forEach(b => {
             const key = b.customer?.toString() || b.customerName || 'unknown';
-            if (!customerMap[key]) {
-                customerMap[key] = {
-                    name: b.customerName || 'Customer',
-                    email: b.customerEmail || '',
-                    bookings: 0,
-                    completed: 0,
-                    cancelled: 0,
-                    spent: 0,
-                    lastBooking: null
-                };
-            }
+            if (!customerMap[key]) customerMap[key] = { name: b.customerName || 'Customer', bookings: 0, spent: 0 };
             customerMap[key].bookings++;
-            if (b.status === 'completed') {
-                customerMap[key].completed++;
-                customerMap[key].spent += (b.totalAmount || 0);
-            }
-            if (b.status === 'cancelled') customerMap[key].cancelled++;
-            if (!customerMap[key].lastBooking || new Date(b.createdAt) > new Date(customerMap[key].lastBooking)) {
-                customerMap[key].lastBooking = b.createdAt;
-            }
+            if (b.status === 'completed') customerMap[key].spent += (b.totalAmount || 0);
         });
 
-        const topCustomers = Object.values(customerMap)
-            .sort((a, b) => b.spent - a.spent)
-            .slice(0, 10)
-            .map(c => ({
-                ...c,
-                averageSpend: c.completed > 0 ? Math.round(c.spent / c.completed) : 0
-            }));
-
-        // ========== SUMMARY STATS ==========
-        const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const startOfYear = new Date(now.getFullYear(), 0, 1);
-
-        const summary = {
-            totalCustomers,
-            totalStaff,
-            activeStaff: activeStaff.length,
-            totalBookings: allBookings.length,
-            bookingsThisMonth: allBookings.filter(b => new Date(b.createdAt) >= startOfMonth).length,
-            bookingsThisYear: allBookings.filter(b => new Date(b.createdAt) >= startOfYear).length,
-            pendingBookings: allBookings.filter(b => b.status === 'pending').length,
-            confirmedBookings: allBookings.filter(b => b.status === 'confirmed').length,
-            completedBookings: allBookings.filter(b => b.status === 'completed').length,
-            cancelledBookings: allBookings.filter(b => b.status === 'cancelled').length,
-            totalOrders: allOrders.length,
-            completedOrders: allOrders.filter(o => o.status === 'completed').length,
-            pendingLeaveRequests: allLeaveRequests.filter(l => l.status === 'pending').length,
-            approvedLeaveRequests: allLeaveRequests.filter(l => l.status === 'approved').length,
-            totalPayrollPaid,
-            totalRevenue,
-            netRevenue,
-            averageBookingValue: allBookings.length > 0 ? Math.round(totalBookingRevenue / allBookings.length) : 0,
-        };
-
-        // ========== NEW CUSTOMERS THIS MONTH ==========
-        const newThisMonth = await User.countDocuments({
-            role: 'customer',
-            createdAt: { $gte: startOfMonth }
-        });
-
-        // ========== RETURNING CUSTOMERS ==========
-        const returningSet = new Set();
-        Object.values(customerMap).forEach(c => {
-            if (c.bookings > 1) returningSet.add(c.name);
-        });
+        const topCustomers = Object.values(customerMap).sort((a, b) => b.spent - a.spent).slice(0, 10).map(c => ({
+            ...c,
+            averageSpend: c.bookings > 0 ? Math.round(c.spent / c.bookings) : 0
+        }));
 
         res.json({
             success: true,
             data: {
-                summary,
                 revenue: {
-                    total: totalRevenue,
-                    net: netRevenue,
-                    expenses: totalPayrollPaid,
+                    total: totalRevenue || 0,
+                    net: netRevenue || 0,
+                    expenses: totalPayrollPaid || 0,
                     growth: 0,
                     monthly: monthlyData
                 },
                 bookings: {
-                    total: allBookings.length,
-                    completed: summary.completedBookings,
-                    cancelled: summary.cancelledBookings,
-                    pending: summary.pendingBookings,
-                    confirmed: summary.confirmedBookings,
+                    total: filteredBookings.length || 0,
+                    completed: filteredBookings.filter(b => b.status === 'completed').length || 0,
+                    cancelled: filteredBookings.filter(b => b.status === 'cancelled').length || 0,
+                    pending: filteredBookings.filter(b => b.status === 'pending').length || 0,
+                    confirmed: filteredBookings.filter(b => b.status === 'confirmed').length || 0,
                     byCategory
                 },
                 customers: {
-                    total: totalCustomers,
-                    newThisMonth,
-                    returning: returningSet.size,
+                    total: totalCustomers || 0,
+                    newThisMonth: 0,
+                    returning: Object.values(customerMap).filter(c => c.bookings > 1).length || 0,
                     averageSpend: totalCustomers > 0 ? Math.round(totalRevenue / totalCustomers) : 0,
                     topCustomers
                 },
                 staff: {
-                    total: activeStaff.length,
-                    totalPaid: totalPayrollPaid,
+                    total: activeStaff.length || 0,
+                    totalPaid: totalPayrollPaid || 0,
                     performance: staffPerformance
                 },
                 products: {
-                    totalSold: allOrders.reduce((sum, o) => sum + (o.items?.length || 0), 0),
-                    totalRevenue: totalOrderRevenue,
+                    totalSold: filteredOrders.reduce((sum, o) => sum + (o.items?.length || 0), 0) || 0,
+                    totalRevenue: totalOrderRevenue || 0,
                     topSelling: []
                 }
             }
@@ -472,7 +429,6 @@ router.get('/analytics', async (req, res) => {
         res.json({
             success: true,
             data: {
-                summary: { totalCustomers: 0, totalStaff: 0, totalBookings: 0, totalRevenue: 0, netRevenue: 0 },
                 revenue: { total: 0, net: 0, expenses: 0, monthly: [] },
                 bookings: { total: 0, completed: 0, cancelled: 0, pending: 0, byCategory: [] },
                 customers: { total: 0, newThisMonth: 0, returning: 0, averageSpend: 0, topCustomers: [] },
