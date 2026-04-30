@@ -16,6 +16,7 @@ const customerRoutes = require('./routes/customer');
 const staffRoutes = require('./routes/staff');
 const adminRoutes = require('./routes/admin');
 const reviewRoutes = require('./routes/reviews');
+const calendarRoutes = require('./routes/calendar');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -64,6 +65,7 @@ app.use('/api/customer', customerRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/calendar', calendarRoutes);
 
 
 // Temporary routes for frontend compatibility
