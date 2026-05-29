@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const LeaveRequest = require('../models/LeaveRequest');
 const Payroll = require('../models/Payroll');
 const User = require('../models/User');
+const CustomerLoyalty = require('../models/CustomerLoyalty');
 const { authenticateToken } = require('../middleware/auth');
 const { isAdmin, isStaff, isCustomer } = require('../middleware/authorization');
 
@@ -618,6 +619,235 @@ router.get('/staff/payroll', authenticateToken, isStaff, async (req, res, next) 
       paymentDate: record.paymentDate
     }));
     res.json({ success: true, data: formatted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==================== LOYALTY PROGRAM ENDPOINTS ====================
+
+// Get customer loyalty information
+router.get('/customer/loyalty', authenticateToken, isCustomer, async (req, res, next) => {
+  try {
+    let loyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
+    
+    // Create loyalty record if it doesn't exist
+    if (!loyalty) {
+      loyalty = await CustomerLoyalty.create({ customer: req.user.id });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        referralCode: loyalty.referralCode,
+        totalVisits: loyalty.totalVisits,
+        fifthVisitReward: {
+          eligible: loyalty.fifthVisitReward.isEligible,
+          claimed: loyalty.fifthVisitReward.isClaimed,
+          claimedAt: loyalty.fifthVisitReward.claimedAt
+        },
+        eleventhVisitReward: {
+          eligible: loyalty.eleventhVisitReward.isEligible,
+          claimed: loyalty.eleventhVisitReward.isClaimed,
+          claimedAt: loyalty.eleventhVisitReward.claimedAt
+        },
+        referralsReceived: loyalty.referralsReceived.map(r => ({
+          customerName: r.referredCustomerName,
+          servicesCompleted: r.completedServices,
+          totalSpent: r.totalAmountSpent,
+          qualified: r.isQualified
+        })),
+        referralReward: {
+          eligible: loyalty.referralReward.isEligible,
+          claimed: loyalty.referralReward.isClaimed,
+          claimedAt: loyalty.referralReward.claimedAt,
+          qualifiedReferrals: loyalty.referralsReceived.filter(r => r.isQualified).length
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Register referral (new customer is referred by existing customer)
+router.post('/customer/loyalty/register-referral', authenticateToken, isCustomer, async (req, res, next) => {
+  try {
+    const { referralCode } = req.body;
+
+    if (!referralCode) {
+      return res.status(400).json({ success: false, message: 'Referral code is required' });
+    }
+
+    // Find the referrer
+    const referrerLoyalty = await CustomerLoyalty.findOne({ referralCode });
+    if (!referrerLoyalty) {
+      return res.status(404).json({ success: false, message: 'Invalid referral code' });
+    }
+
+    // Get current customer's loyalty record
+    let customerLoyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
+    if (!customerLoyalty) {
+      customerLoyalty = await CustomerLoyalty.create({ customer: req.user.id });
+    }
+
+    // Set referrer
+    customerLoyalty.referredBy = referrerLoyalty.customer;
+    await customerLoyalty.save();
+
+    // Add to referrer's referrals
+    const customer = await User.findById(req.user.id);
+    referrerLoyalty.addReferral(req.user.id, `${customer.firstName} ${customer.lastName}`, customer.email);
+    await referrerLoyalty.save();
+
+    res.json({ success: true, message: 'Referral registered successfully' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Record completed booking/visit
+router.post('/customer/loyalty/record-visit', authenticateToken, isAdmin, async (req, res, next) => {
+  try {
+    const { customerId, bookingId, amount } = req.body;
+
+    if (!customerId || !bookingId || amount === undefined) {
+      return res.status(400).json({ success: false, message: 'Customer ID, booking ID, and amount are required' });
+    }
+
+    let loyalty = await CustomerLoyalty.findOne({ customer: customerId });
+    if (!loyalty) {
+      loyalty = await CustomerLoyalty.create({ customer: customerId });
+    }
+
+    loyalty.addVisit(bookingId, amount);
+    await loyalty.save();
+
+    // Check if referrer should be qualified
+    const referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': customerId });
+    if (referrer) {
+      referrer.qualifyReferral(customerId);
+      await referrer.save();
+    }
+
+    res.json({
+      success: true,
+      message: 'Visit recorded',
+      data: {
+        totalVisits: loyalty.totalVisits,
+        fifthVisitReward: loyalty.fifthVisitReward.isEligible && !loyalty.fifthVisitReward.isClaimed,
+        eleventhVisitReward: loyalty.eleventhVisitReward.isEligible && !loyalty.eleventhVisitReward.isClaimed
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Claim a loyalty reward
+router.post('/customer/loyalty/claim-reward', authenticateToken, isCustomer, async (req, res, next) => {
+  try {
+    const { rewardType, bookingId } = req.body;
+
+    if (!rewardType || !bookingId) {
+      return res.status(400).json({ success: false, message: 'Reward type and booking ID are required' });
+    }
+
+    const loyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
+    if (!loyalty) {
+      return res.status(404).json({ success: false, message: 'No loyalty record found' });
+    }
+
+    const validRewards = ['fifth-visit', 'eleventh-visit', 'referral'];
+    if (!validRewards.includes(rewardType)) {
+      return res.status(400).json({ success: false, message: 'Invalid reward type' });
+    }
+
+    const claimed = loyalty.claimReward(rewardType, bookingId);
+    if (!claimed) {
+      return res.status(400).json({ success: false, message: 'Reward cannot be claimed' });
+    }
+
+    await loyalty.save();
+
+    res.json({
+      success: true,
+      message: `${rewardType === 'fifth-visit' ? '50% off' : rewardType === 'eleventh-visit' ? 'Free service' : 'Free treatment'} reward claimed!`,
+      data: { rewardType, claimedAt: new Date() }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get referral program information
+router.get('/customer/loyalty/referral-info', authenticateToken, isCustomer, async (req, res, next) => {
+  try {
+    let loyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
+    if (!loyalty) {
+      loyalty = await CustomerLoyalty.create({ customer: req.user.id });
+    }
+
+    const qualifiedReferrals = loyalty.referralsReceived.filter(r => r.isQualified).length;
+
+    res.json({
+      success: true,
+      data: {
+        referralCode: loyalty.referralCode,
+        referralsCount: loyalty.referralsReceived.length,
+        qualifiedReferrals,
+        referralRewardStatus: {
+          requirementsMet: qualifiedReferrals >= 3,
+          eligible: loyalty.referralReward.isEligible,
+          claimed: loyalty.referralReward.isClaimed,
+          qualifiedCount: qualifiedReferrals,
+          requiredCount: 3
+        },
+        referrals: loyalty.referralsReceived.map((r, idx) => ({
+          id: idx,
+          customerName: r.referredCustomerName,
+          email: r.referredCustomerEmail,
+          dateReferred: r.referralDate,
+          servicesCompleted: r.completedServices,
+          totalSpent: r.totalAmountSpent,
+          qualified: r.isQualified,
+          qualifiedDate: r.qualifiedDate
+        }))
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Admin endpoint to manage loyalty
+router.get('/admin/loyalty/:customerId', authenticateToken, isAdmin, async (req, res, next) => {
+  try {
+    const loyalty = await CustomerLoyalty.findOne({ customer: req.params.customerId })
+      .populate('customer', 'firstName lastName email')
+      .populate('referredBy', 'firstName lastName');
+    
+    if (!loyalty) {
+      return res.status(404).json({ success: false, message: 'Loyalty record not found' });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        customer: loyalty.customer,
+        totalVisits: loyalty.totalVisits,
+        visitRewards: {
+          fifthVisit: { eligible: loyalty.fifthVisitReward.isEligible, claimed: loyalty.fifthVisitReward.isClaimed },
+          eleventhVisit: { eligible: loyalty.eleventhVisitReward.isEligible, claimed: loyalty.eleventhVisitReward.isClaimed }
+        },
+        referralRewards: {
+          totalReferrals: loyalty.referralsReceived.length,
+          qualifiedReferrals: loyalty.referralsReceived.filter(r => r.isQualified).length,
+          rewardEligible: loyalty.referralReward.isEligible,
+          rewardClaimed: loyalty.referralReward.isClaimed
+        }
+      }
+    });
   } catch (error) {
     next(error);
   }
