@@ -1,10 +1,11 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { isAdmin } = require('../middleware/authorization');
 const User = require('../models/User');
 const Service = require('../models/Service');
 const Booking = require('../models/Booking');
+const CustomerLoyalty = require('../models/CustomerLoyalty');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Payroll = require('../models/Payroll');
@@ -26,6 +27,38 @@ function getRelativeTime(date) {
     return new Date(date).toLocaleDateString();
 }
 
+async function processCompletedBookingLoyalty(booking) {
+    if (!booking || !booking.customer) return null;
+
+    let loyalty = await CustomerLoyalty.findOne({ customer: booking.customer });
+    if (!loyalty) {
+        loyalty = await CustomerLoyalty.create({ customer: booking.customer });
+    }
+
+    const bookingIdString = booking._id.toString();
+    const alreadyRecorded = loyalty.completedVisits.some(v => v.booking?.toString() === bookingIdString);
+    if (!alreadyRecorded) {
+        loyalty.addVisit(booking._id, booking.totalAmount || 0);
+        await loyalty.save();
+    }
+
+    const referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': booking.customer });
+    if (referrer) {
+        const referral = referrer.referralsReceived.find(r => r.referredCustomer.toString() === booking.customer.toString());
+        if (referral) {
+            referral.totalAmountSpent = (referral.totalAmountSpent || 0) + (booking.totalAmount || 0);
+            referral.completedServices = (referral.completedServices || 0) + (booking.services?.length || 1);
+            if (!referral.isQualified && (booking.totalAmount || 0) >= 500) {
+                referral.isQualified = true;
+                referral.qualifiedDate = new Date();
+            }
+            referrer.checkReferralReward();
+            await referrer.save();
+        }
+    }
+
+    return loyalty;
+}
 
 // All routes require authentication and admin role
 router.use(authenticateToken);
@@ -810,18 +843,76 @@ router.get('/bookings', async (req, res) => {
 router.put('/bookings/:id', async (req, res) => {
     try {
         const Booking = require('../models/Booking');
+        const existingBooking = await Booking.findById(req.params.id);
+        if (!existingBooking) return res.status(404).json({ success: false, message: 'Booking not found' });
+
+        const previousStatus = existingBooking.status;
+        const updatedStatus = req.body.status;
+
         const booking = await Booking.findByIdAndUpdate(
             req.params.id,
-            { status: req.body.status },
+            { status: updatedStatus },
             { new: true }
         );
+
         if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+
+        if (updatedStatus === 'completed' && previousStatus !== 'completed') {
+            await processCompletedBookingLoyalty(booking);
+        }
+
         res.json({ success: true, message: 'Booking updated', data: booking });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
+// @route   POST /api/admin/loyalty/reconcile/:customerId
+// @desc    Reconcile loyalty visit count from completed bookings
+// @access  Private (Admin)
+router.post('/loyalty/reconcile/:customerId', async (req, res) => {
+    try {
+        const customerId = req.params.customerId;
+        const completedBookings = await Booking.find({ customer: customerId, status: 'completed' }).lean();
+
+        let loyalty = await CustomerLoyalty.findOne({ customer: customerId });
+        if (!loyalty) {
+            loyalty = await CustomerLoyalty.create({ customer: customerId });
+        }
+
+        const recordedBookingIds = new Set(loyalty.completedVisits.map(v => v.booking?.toString()));
+        let added = 0;
+
+        for (const booking of completedBookings) {
+            if (!recordedBookingIds.has(booking._id.toString())) {
+                loyalty.completedVisits.push({
+                    booking: booking._id,
+                    visitDate: booking.bookingDate || booking.createdAt,
+                    amount: booking.totalAmount || 0
+                });
+                loyalty.totalVisits += 1;
+                added += 1;
+            }
+        }
+
+        if (added > 0) {
+            loyalty.checkFifthVisitReward();
+            loyalty.checkEleventhVisitReward();
+            await loyalty.save();
+        }
+
+        res.json({
+            success: true,
+            message: `Loyalty reconciled. ${added} missing visit${added == 1 ? '' : 's'} added.`,
+            data: {
+                totalVisits: loyalty.totalVisits,
+                added
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
 // ========== ORDERS MANAGEMENT ==========
 
 // @route   GET /api/admin/orders
