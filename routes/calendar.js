@@ -4,6 +4,17 @@ const { authenticateToken } = require('../middleware/auth');
 const Booking = require('../models/Booking');
 const LeaveRequest = require('../models/LeaveRequest');
 const Order = require('../models/Order');
+const Activity = require('../models/Activity');
+
+const mapAuthActivities = (activities) => activities.map((activity) => ({
+  date: activity.createdAt ? new Date(activity.createdAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+  type: 'user',
+  title: activity.action === 'register' ? 'New Registration' : activity.action === 'login' ? 'User Login' : 'User Activity',
+  description: activity.description,
+  userName: activity.userName || 'User',
+  time: activity.createdAt ? new Date(activity.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : undefined,
+  status: activity.action
+}));
 
 // @route   GET /api/calendar/events
 // @desc    Get calendar events based on role and user
@@ -83,6 +94,12 @@ router.get('/events', authenticateToken, async (req, res) => {
           amount: o.totalAmount
         });
       });
+
+      const activityEvents = await Activity.find({
+        type: 'user',
+        createdAt: { $gte: startDate, $lte: endDate }
+      }).sort({ createdAt: 1 }).lean();
+      events = events.concat(mapAuthActivities(activityEvents));
     }
 
     // STAFF: See own bookings and leave requests
@@ -134,6 +151,13 @@ router.get('/events', authenticateToken, async (req, res) => {
           }
         }
       });
+
+      const staffActivityEvents = await Activity.find({
+        type: 'user',
+        userId: req.user.id,
+        createdAt: { $gte: startDate, $lte: endDate }
+      }).sort({ createdAt: 1 }).lean();
+      events = events.concat(mapAuthActivities(staffActivityEvents));
     }
 
     // CUSTOMER: See own bookings and orders
@@ -178,6 +202,13 @@ router.get('/events', authenticateToken, async (req, res) => {
           amount: o.totalAmount
         });
       });
+
+      const customerActivityEvents = await Activity.find({
+        type: 'user',
+        userId: req.user.id,
+        createdAt: { $gte: startDate, $lte: endDate }
+      }).sort({ createdAt: 1 }).lean();
+      events = events.concat(mapAuthActivities(customerActivityEvents));
     }
 
     res.json({ success: true, data: events });

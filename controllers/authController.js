@@ -1,10 +1,32 @@
 const User = require('../models/User');
+const CustomerLoyalty = require('../models/CustomerLoyalty');
+const Activity = require('../models/Activity');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const bcrypt = require('bcryptjs');
 
 const register = async (req, res) => {
     try {
-        const { email, password, firstName, lastName, phone } = req.body;
+        const { email, password, firstName, lastName, phone, referralCode } = req.body;
+        const normalizedReferralCode = referralCode?.toString().trim().toUpperCase();
+
+        let referrerLoyalty = null;
+        if (normalizedReferralCode) {
+            // Try exact match first
+            referrerLoyalty = await CustomerLoyalty.findOne({ referralCode: normalizedReferralCode });
+            
+            // Fallback to case-insensitive search if exact match fails
+            if (!referrerLoyalty) {
+                referrerLoyalty = await CustomerLoyalty.findOne({ 
+                    referralCode: { $regex: `^${normalizedReferralCode}$`, $options: 'i' } 
+                });
+            }
+            
+            if (!referrerLoyalty) {
+                console.warn('❌ Referral code lookup failed:', normalizedReferralCode);
+                return res.status(400).json({ success: false, message: 'Invalid referral code' });
+            }
+            console.log('✅ Referral code found:', normalizedReferralCode, 'for referrer:', referrerLoyalty.customer);
+        }
 
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
@@ -22,6 +44,39 @@ const register = async (req, res) => {
         });
 
         await user.save();
+
+        const loyaltyData = { customer: user._id };
+        if (referrerLoyalty) {
+            loyaltyData.referredBy = referrerLoyalty.customer;
+        }
+
+        const newLoyalty = await CustomerLoyalty.create(loyaltyData);
+        console.log('✅ Created loyalty record for new customer:', user._id, 'with referralCode:', newLoyalty.referralCode);
+
+        if (referrerLoyalty) {
+            referrerLoyalty.addReferral(user._id, `${user.firstName} ${user.lastName}`, user.email);
+            await referrerLoyalty.save();
+            console.log('✅ Added referral to referrer:', referrerLoyalty.customer, 'Total referrals now:', referrerLoyalty.referralsReceived.length);
+        }
+
+        try {
+            await Activity.log({
+                type: 'user',
+                action: 'register',
+                description: `New customer registration: ${user.firstName} ${user.lastName} (${user.email})`,
+                userId: user._id,
+                userName: `${user.firstName} ${user.lastName}`,
+                targetId: user._id,
+                targetType: 'user',
+                metadata: {
+                    role: 'customer',
+                    referralCode: normalizedReferralCode || null
+                }
+            });
+            console.log('✅ Activity logged for registration:', user.email);
+        } catch (err) {
+            console.error('❌ Failed to log activity for registration:', err);
+        }
 
         const accessToken = generateAccessToken(user._id, user.role);
         const refreshToken = generateRefreshToken(user._id);
@@ -79,6 +134,24 @@ const login = async (req, res) => {
 
         const userData = user.toJSON();
         console.log('✅ Login successful for:', userData.email, 'Role:', userData.role);
+
+        try {
+            await Activity.log({
+                type: 'user',
+                action: 'login',
+                description: `User login: ${userData.email}`,
+                userId: user._id,
+                userName: `${userData.firstName} ${userData.lastName}`,
+                targetId: user._id,
+                targetType: 'user',
+                metadata: {
+                    role: userData.role
+                }
+            });
+            console.log('✅ Activity logged for login:', userData.email);
+        } catch (err) {
+            console.error('❌ Failed to log activity for login:', err);
+        }
 
         res.json({
             success: true,

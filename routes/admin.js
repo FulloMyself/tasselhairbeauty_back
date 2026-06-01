@@ -114,6 +114,24 @@ router.get('/stats', async (req, res) => {
             ? ((monthlyRevenue - lastMonthRevenue) / lastMonthRevenue * 100).toFixed(1)
             : 0;
 
+        const loyaltyDocs = await CustomerLoyalty.find().lean();
+        const loyaltySummary = loyaltyDocs.reduce((summary, doc) => {
+            const qualifiedReferrals = (doc.referralsReceived || []).filter(r => r.isQualified).length;
+            return {
+                totalLoyaltyCustomers: summary.totalLoyaltyCustomers + 1,
+                totalLoyaltyVisits: summary.totalLoyaltyVisits + (doc.totalVisits || 0),
+                totalReferrals: summary.totalReferrals + ((doc.referralsReceived || []).length),
+                totalQualifiedReferrals: summary.totalQualifiedReferrals + qualifiedReferrals,
+                referralRewardsEligible: summary.referralRewardsEligible + (doc.referralReward?.isEligible ? 1 : 0)
+            };
+        }, {
+            totalLoyaltyCustomers: 0,
+            totalLoyaltyVisits: 0,
+            totalReferrals: 0,
+            totalQualifiedReferrals: 0,
+            referralRewardsEligible: 0
+        });
+
         // Get recent activities
         const recentActivities = await Activity.find()
             .sort({ createdAt: -1 })
@@ -141,7 +159,14 @@ router.get('/stats', async (req, res) => {
             growth: parseFloat(growth),
             completedBookings,
             pendingBookings,
-            recentActivity
+            recentActivity,
+            loyalty: {
+                totalCustomers: loyaltySummary.totalLoyaltyCustomers,
+                totalVisits: loyaltySummary.totalLoyaltyVisits,
+                totalReferrals: loyaltySummary.totalReferrals,
+                totalQualifiedReferrals: loyaltySummary.totalQualifiedReferrals,
+                referralRewardsEligible: loyaltySummary.referralRewardsEligible
+            }
         };
 
         res.json({ success: true, data: stats });

@@ -651,6 +651,7 @@ router.get('/customer/loyalty', authenticateToken, isCustomer, async (req, res, 
           claimed: loyalty.eleventhVisitReward.isClaimed,
           claimedAt: loyalty.eleventhVisitReward.claimedAt
         },
+        referralsCount: loyalty.referralsReceived.length,
         referralsReceived: loyalty.referralsReceived.map(r => ({
           customerName: r.referredCustomerName,
           servicesCompleted: r.completedServices,
