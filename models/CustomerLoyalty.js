@@ -175,11 +175,13 @@ customerLoyaltySchema.methods.checkEleventhVisitReward = function() {
 
 // Method to check if eligible for referral reward
 customerLoyaltySchema.methods.checkReferralReward = function() {
+  const totalReferrals = this.referralsReceived.length;
   const qualifiedReferrals = this.referralsReceived.filter(r => r.isQualified).length;
-  if (qualifiedReferrals >= 3 && !this.referralReward.isClaimed) {
-    this.referralReward.isEligible = true;
-    this.referralReward.requirementsMet.qualifiedReferrals = qualifiedReferrals;
-  }
+
+  this.referralReward.requirementsMet.referralsCount = totalReferrals;
+  this.referralReward.requirementsMet.qualifiedReferrals = qualifiedReferrals;
+  this.referralReward.isEligible = qualifiedReferrals >= 3 && !this.referralReward.isClaimed;
+
   return this.referralReward.isEligible;
 };
 
@@ -230,11 +232,41 @@ customerLoyaltySchema.methods.addVisit = function(bookingId, amount) {
 
 // Method to add a referral
 customerLoyaltySchema.methods.addReferral = function(referredCustomerId, referredCustomerName, referredCustomerEmail) {
-  this.referralsReceived.push({
-    referredCustomer: referredCustomerId,
-    referredCustomerName,
-    referredCustomerEmail
-  });
+  const existingReferral = this.referralsReceived.find(
+    r => r.referredCustomer.toString() === referredCustomerId.toString()
+  );
+
+  if (!existingReferral) {
+    this.referralsReceived.push({
+      referredCustomer: referredCustomerId,
+      referredCustomerName,
+      referredCustomerEmail
+    });
+    this.checkReferralReward();
+  }
+};
+
+// Method to update a referral progress entry
+customerLoyaltySchema.methods.updateReferralProgress = function(referredCustomerId, amount, completedServices = 1) {
+  const referral = this.referralsReceived.find(
+    r => r.referredCustomer.toString() === referredCustomerId.toString()
+  );
+
+  if (!referral) {
+    return false;
+  }
+
+  referral.totalAmountSpent = (referral.totalAmountSpent || 0) + amount;
+  referral.completedServices = (referral.completedServices || 0) + completedServices;
+
+  // Qualify referral when cumulative spend crosses threshold (R500)
+  if (!referral.isQualified && (referral.totalAmountSpent || 0) >= 500) {
+    referral.isQualified = true;
+    referral.qualifiedDate = new Date();
+  }
+
+  this.checkReferralReward();
+  return true;
 };
 
 // Method to qualify a referral (when they complete their service)

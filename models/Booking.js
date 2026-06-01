@@ -10,6 +10,23 @@ const bookingSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  customerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  serviceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Service'
+  },
+  staffId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  whatsappMessage: {
+    type: String,
+    default: ''
+  },
   customerName: {
     type: String,
     default: ''
@@ -118,6 +135,14 @@ const bookingSchema = new mongoose.Schema({
 bookingSchema.pre('save', function(next) {
   if (!this.bookingNumber) {
     this.bookingNumber = 'TASSEL-' + Date.now().toString(36).toUpperCase();
+  }
+  
+  if (!this.customer && this.customerId) {
+    this.customer = this.customerId;
+  }
+
+  if (!this.staff && this.staffId) {
+    this.staff = this.staffId;
   }
   
   // Set booking date to createdAt if not provided

@@ -724,19 +724,20 @@ router.post('/customer/loyalty/record-visit', authenticateToken, isAdmin, async 
     loyalty.addVisit(bookingId, amount);
     await loyalty.save();
 
-    // Check if referrer should be qualified for the referral reward
-    const referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': customerId });
+    const customerLoyaltyDoc = await CustomerLoyalty.findOne({ customer: customerId });
+    const referrerId = customerLoyaltyDoc?.referredBy;
+    let referrer = null;
+
+    if (referrerId) {
+      referrer = await CustomerLoyalty.findOne({ customer: referrerId });
+    }
+
+    if (!referrer) {
+      referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': customerId });
+    }
+
     if (referrer) {
-      const referral = referrer.referralsReceived.find(r => r.referredCustomer.toString() === customerId.toString());
-      if (referral) {
-        referral.totalAmountSpent = (referral.totalAmountSpent || 0) + amount;
-        referral.completedServices = (referral.completedServices || 0) + 1;
-        if (!referral.isQualified && amount >= 500) {
-          referral.isQualified = true;
-          referral.qualifiedDate = new Date();
-        }
-      }
-      referrer.checkReferralReward();
+      referrer.updateReferralProgress(customerId, amount, 1);
       await referrer.save();
     }
 

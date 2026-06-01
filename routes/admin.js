@@ -28,11 +28,14 @@ function getRelativeTime(date) {
 }
 
 async function processCompletedBookingLoyalty(booking) {
-    if (!booking || !booking.customer) return null;
+    if (!booking) return null;
 
-    let loyalty = await CustomerLoyalty.findOne({ customer: booking.customer });
+    const customerId = booking.customer || booking.customerId || null;
+    if (!customerId) return null;
+
+    let loyalty = await CustomerLoyalty.findOne({ customer: customerId });
     if (!loyalty) {
-        loyalty = await CustomerLoyalty.create({ customer: booking.customer });
+        loyalty = await CustomerLoyalty.create({ customer: customerId });
     }
 
     const bookingIdString = booking._id.toString();
@@ -42,19 +45,21 @@ async function processCompletedBookingLoyalty(booking) {
         await loyalty.save();
     }
 
-    const referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': booking.customer });
+    const customerLoyaltyDoc = await CustomerLoyalty.findOne({ customer: customerId });
+    const referrerId = customerLoyaltyDoc?.referredBy;
+    let referrer = null;
+
+    if (referrerId) {
+        referrer = await CustomerLoyalty.findOne({ customer: referrerId });
+    }
+
+    if (!referrer) {
+        referrer = await CustomerLoyalty.findOne({ 'referralsReceived.referredCustomer': customerId });
+    }
+
     if (referrer) {
-        const referral = referrer.referralsReceived.find(r => r.referredCustomer.toString() === booking.customer.toString());
-        if (referral) {
-            referral.totalAmountSpent = (referral.totalAmountSpent || 0) + (booking.totalAmount || 0);
-            referral.completedServices = (referral.completedServices || 0) + (booking.services?.length || 1);
-            if (!referral.isQualified && (booking.totalAmount || 0) >= 500) {
-                referral.isQualified = true;
-                referral.qualifiedDate = new Date();
-            }
-            referrer.checkReferralReward();
-            await referrer.save();
-        }
+        referrer.updateReferralProgress(customerId, booking.totalAmount || 0, booking.services?.length || 1);
+        await referrer.save();
     }
 
     return loyalty;
@@ -114,7 +119,7 @@ router.get('/stats', async (req, res) => {
             ? ((monthlyRevenue - lastMonthRevenue) / lastMonthRevenue * 100).toFixed(1)
             : 0;
 
-        const loyaltyDocs = await CustomerLoyalty.find().lean();
+        const loyaltyDocs = await CustomerLoyalty.find().populate('customer', 'firstName lastName email').lean();
         const loyaltySummary = loyaltyDocs.reduce((summary, doc) => {
             const qualifiedReferrals = (doc.referralsReceived || []).filter(r => r.isQualified).length;
             return {
@@ -131,6 +136,29 @@ router.get('/stats', async (req, res) => {
             totalQualifiedReferrals: 0,
             referralRewardsEligible: 0
         });
+
+        // Build a flat referrals list for admin viewing (recent first)
+        const referralsList = [];
+        for (const doc of loyaltyDocs) {
+            const referrerName = doc.customer ? `${doc.customer.firstName || ''} ${doc.customer.lastName || ''}`.trim() : 'Unknown Referrer';
+            const referrerId = doc.customer?._id || doc.customer;
+            for (const r of (doc.referralsReceived || [])) {
+                referralsList.push({
+                    referrerId,
+                    referrerName,
+                    referredCustomerId: r.referredCustomer,
+                    referredCustomerName: r.referredCustomerName || 'Unknown',
+                    referredCustomerEmail: r.referredCustomerEmail || '',
+                    referralDate: r.referralDate,
+                    isQualified: !!r.isQualified,
+                    totalAmountSpent: r.totalAmountSpent || 0
+                });
+            }
+        }
+
+        // Sort by referralDate desc and limit
+        referralsList.sort((a, b) => new Date(b.referralDate) - new Date(a.referralDate));
+        const recentReferrals = referralsList.slice(0, 50);
 
         // Get recent activities
         const recentActivities = await Activity.find()
@@ -165,7 +193,8 @@ router.get('/stats', async (req, res) => {
                 totalVisits: loyaltySummary.totalLoyaltyVisits,
                 totalReferrals: loyaltySummary.totalReferrals,
                 totalQualifiedReferrals: loyaltySummary.totalQualifiedReferrals,
-                referralRewardsEligible: loyaltySummary.referralRewardsEligible
+                referralRewardsEligible: loyaltySummary.referralRewardsEligible,
+                referralsList: recentReferrals
             }
         };
 
