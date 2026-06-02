@@ -9,7 +9,9 @@ const {
   refreshToken,
   getMe,
   updateProfile,
-  changePassword
+  changePassword,
+  forgotPassword,
+  resetPassword
 } = require('../controllers/authController');
 
 const { authenticateToken } = require('../middleware/auth');
@@ -29,9 +31,21 @@ const validateLogin = [
   body('password').notEmpty().withMessage('Password required')
 ];
 
+const validateForgotPassword = [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+  body('phone').notEmpty().withMessage('Phone number is required').isMobilePhone().withMessage('Valid phone required')
+];
+
+const validateResetPassword = [
+  body('token').notEmpty().withMessage('Token is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
+];
+
 // Routes
 router.post('/register', validateRegistration, validateRequest, register);
 router.post('/login', validateLogin, validateRequest, login);
+router.post('/forgot-password', validateForgotPassword, validateRequest, forgotPassword);
+router.post('/reset-password', validateResetPassword, validateRequest, resetPassword);
 router.post('/logout', authenticateToken, logout);
 router.post('/refresh-token', refreshToken);
 router.get('/me', authenticateToken, getMe);

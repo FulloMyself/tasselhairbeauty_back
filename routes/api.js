@@ -627,14 +627,24 @@ router.get('/staff/payroll', authenticateToken, isStaff, async (req, res, next) 
 // ==================== LOYALTY PROGRAM ENDPOINTS ====================
 
 // Get customer loyalty information
+async function getOrCreateLoyaltyRecord(customerId) {
+  let loyalty = await CustomerLoyalty.findOne({ customer: customerId });
+  if (loyalty) return loyalty;
+
+  try {
+    loyalty = await CustomerLoyalty.create({ customer: customerId });
+    return loyalty;
+  } catch (error) {
+    if (error.code === 11000) {
+      return CustomerLoyalty.findOne({ customer: customerId });
+    }
+    throw error;
+  }
+}
+
 router.get('/customer/loyalty', authenticateToken, isCustomer, async (req, res, next) => {
   try {
-    let loyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
-    
-    // Create loyalty record if it doesn't exist
-    if (!loyalty) {
-      loyalty = await CustomerLoyalty.create({ customer: req.user.id });
-    }
+    const loyalty = await getOrCreateLoyaltyRecord(req.user.id);
 
     res.json({
       success: true,
@@ -687,12 +697,7 @@ router.post('/customer/loyalty/register-referral', authenticateToken, isCustomer
     }
 
     // Get current customer's loyalty record
-    let customerLoyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
-    if (!customerLoyalty) {
-      customerLoyalty = await CustomerLoyalty.create({ customer: req.user.id });
-    }
-
-    // Set referrer
+    const customerLoyalty = await getOrCreateLoyaltyRecord(req.user.id);
     customerLoyalty.referredBy = referrerLoyalty.customer;
     await customerLoyalty.save();
 
@@ -716,11 +721,7 @@ router.post('/customer/loyalty/record-visit', authenticateToken, isAdmin, async 
       return res.status(400).json({ success: false, message: 'Customer ID, booking ID, and amount are required' });
     }
 
-    let loyalty = await CustomerLoyalty.findOne({ customer: customerId });
-    if (!loyalty) {
-      loyalty = await CustomerLoyalty.create({ customer: customerId });
-    }
-
+    const loyalty = await getOrCreateLoyaltyRecord(customerId);
     loyalty.addVisit(bookingId, amount);
     await loyalty.save();
 
@@ -794,11 +795,7 @@ router.post('/customer/loyalty/claim-reward', authenticateToken, isCustomer, asy
 // Get referral program information
 router.get('/customer/loyalty/referral-info', authenticateToken, isCustomer, async (req, res, next) => {
   try {
-    let loyalty = await CustomerLoyalty.findOne({ customer: req.user.id });
-    if (!loyalty) {
-      loyalty = await CustomerLoyalty.create({ customer: req.user.id });
-    }
-
+    const loyalty = await getOrCreateLoyaltyRecord(req.user.id);
     const qualifiedReferrals = loyalty.referralsReceived.filter(r => r.isQualified).length;
 
     res.json({

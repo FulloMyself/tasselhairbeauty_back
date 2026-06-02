@@ -1,12 +1,24 @@
 const twilio = require('twilio');
 
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+
 /**
- * Initialize Twilio client
+ * Initialize Twilio client if configuration is valid
  */
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+const initTwilioClient = () => {
+  if (!accountSid || !authToken || !twilioPhoneNumber) {
+    return null;
+  }
+
+  if (!accountSid.startsWith('AC')) {
+    console.warn('Twilio config invalid: accountSid does not start with AC');
+    return null;
+  }
+
+  return twilio(accountSid, authToken);
+};
 
 /**
  * Send WhatsApp message
@@ -15,10 +27,15 @@ const client = twilio(
  * @returns {Promise<object>} Message response
  */
 const sendWhatsAppMessage = async (recipientPhoneNumber, message) => {
+  const client = initTwilioClient();
+  if (!client) {
+    throw new Error('Twilio WhatsApp is not configured or invalid');
+  }
+
   try {
     const response = await client.messages.create({
       body: message,
-      from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
+      from: `whatsapp:${twilioPhoneNumber}`,
       to: `whatsapp:${recipientPhoneNumber}`,
     });
 

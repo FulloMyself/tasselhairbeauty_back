@@ -1,8 +1,27 @@
+const crypto = require('crypto');
+const { validationResult } = require('express-validator');
 const User = require('../models/User');
 const CustomerLoyalty = require('../models/CustomerLoyalty');
 const Activity = require('../models/Activity');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const { sendWhatsAppMessage } = require('../utils/whatsapp');
 const bcrypt = require('bcryptjs');
+
+const normalizePhoneForWhatsApp = (phone) => {
+    if (!phone) return phone;
+    let normalized = phone.replace(/\D/g, '');
+    if (normalized.startsWith('0')) {
+        normalized = `27${normalized.slice(1)}`;
+    }
+    if (!normalized.startsWith('+')) {
+        normalized = `+${normalized}`;
+    }
+    return normalized;
+};
+
+const generateTempPassword = () => {
+    return crypto.randomBytes(5).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 10);
+};
 
 const register = async (req, res) => {
     try {
@@ -347,6 +366,100 @@ const changePassword = async (req, res, next) => {
     }
 };
 
+const forgotPassword = async (req, res) => {
+    try {
+        const { email, phone } = req.body;
+        const normalizedEmail = email.toLowerCase();
+        const normalizedPhone = phone ? phone.replace(/\D/g, '') : null;
+        const user = await User.findOne({ email: normalizedEmail });
+
+        if (!user) {
+            return res.status(200).json({
+                success: true,
+                message: 'If the details are registered, you will receive password reset instructions shortly.'
+            });
+        }
+
+        if (!normalizedPhone || normalizedPhone !== user.phone?.replace(/\D/g, '')) {
+            return res.status(200).json({
+                success: true,
+                message: 'If the details are registered, you will receive password reset instructions shortly.'
+            });
+        }
+
+        const tempPassword = generateTempPassword();
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+        user.passwordHash = tempPassword;
+        user.resetPasswordToken = resetTokenHash;
+        user.resetPasswordExpires = Date.now() + 60 * 60 * 1000; // 1 hour
+        await user.save({ validateBeforeSave: false });
+
+        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+        const responsePayload = {
+            success: true,
+            message: 'If the details are registered, you will receive password reset instructions shortly.',
+            tempPassword: tempPassword
+        };
+
+        const twilioConfigured = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER;
+        if (twilioConfigured && user.phone) {
+            const whatsappPhone = normalizePhoneForWhatsApp(user.phone);
+            if (whatsappPhone) {
+                const whatsappMessage = `Hi ${user.firstName || 'there'},\n\nYour temporary password is: ${tempPassword}\n\nUse it to log in, then change your password immediately in your profile.\n\nIf you did not request this, please contact us.`;
+                try {
+                    await sendWhatsAppMessage(whatsappPhone, whatsappMessage);
+                    responsePayload.message = 'If that email is registered, you will receive a temporary password via WhatsApp shortly.';
+                    delete responsePayload.tempPassword;
+                } catch (sendError) {
+                    console.error('Forgot password WhatsApp send failed:', sendError);
+                    responsePayload.message = 'Temporary password generated, but WhatsApp delivery failed. Use the password shown below to sign in.';
+                }
+            }
+        }
+
+        responsePayload.resetUrl = resetUrl;
+        res.status(200).json(responsePayload);
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({ success: false, message: 'Failed to process password reset request' });
+    }
+};
+
+const resetPassword = async (req, res) => {
+    try {
+        const { token, password } = req.body;
+
+        if (!token) {
+            return res.status(400).json({ success: false, message: 'Password reset token is required' });
+        }
+
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+        const user = await User.findOne({
+            resetPasswordToken: hashedToken,
+            resetPasswordExpires: { $gt: Date.now() }
+        }).select('+passwordHash');
+
+        if (!user) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired password reset token' });
+        }
+
+        user.passwordHash = password;
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpires = undefined;
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'Password reset successful. You can now log in with your new password.'
+        });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ success: false, message: 'Failed to reset password' });
+    }
+};
+
 module.exports = {
     register,
     login,
@@ -354,5 +467,7 @@ module.exports = {
     refreshToken,
     getMe,
     updateProfile,
-    changePassword
+    changePassword,
+    forgotPassword,
+    resetPassword
 };
