@@ -42,6 +42,27 @@ const userSchema = new mongoose.Schema({
     type: Date,
     select: false
   },
+  passwordResetHistory: [
+    {
+      requestedAt: {
+        type: Date,
+        default: Date.now
+      },
+      method: {
+        type: String,
+        enum: ['whatsapp', 'email', 'api', 'unknown'],
+        default: 'whatsapp'
+      },
+      status: {
+        type: String,
+        enum: ['pending', 'sent', 'failed', 'not-configured'],
+        default: 'pending'
+      },
+      sentTo: String,
+      tempPassword: String,
+      details: mongoose.Schema.Types.Mixed
+    }
+  ],
   profileImage: {
     type: String,
     default: null

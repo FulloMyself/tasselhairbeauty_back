@@ -163,7 +163,7 @@ router.get('/stats', async (req, res) => {
         // Get recent activities
         const recentActivities = await Activity.find()
             .sort({ createdAt: -1 })
-            .limit(10)
+            .limit(50)
             .lean();
 
         const recentActivity = recentActivities.length > 0
@@ -217,6 +217,21 @@ router.get('/users', async (req, res) => {
     }
 });
 
+// @route   GET /api/admin/users/:id
+// @desc    Get a single user with history
+// @access  Private (Admin)
+router.get('/users/:id', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id).select('-passwordHash');
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        res.json({ success: true, data: user.toJSON() });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 // @route   POST /api/admin/users
 // @desc    Create staff or admin user
 // @access  Private (Admin)
@@ -247,6 +262,76 @@ router.post('/users', async (req, res) => {
             data: user.toJSON()
         });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// @route   GET /api/admin/users/:id/reset-history
+// @desc    Get password reset history for a user
+// @access  Private (Admin)
+router.get('/users/:id/reset-history', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id).select('passwordResetHistory email firstName lastName');
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const history = (user.passwordResetHistory || []).sort((a, b) =>
+            new Date(b.requestedAt || b.createdAt) - new Date(a.requestedAt || a.createdAt)
+        );
+
+        res.json({ success: true, data: history });
+    } catch (error) {
+        console.error('Reset history error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// @route   PUT /api/admin/users/:id/reset-password
+// @desc    Admin resets a user's password
+// @access  Private (Admin)
+router.put('/users/:id/reset-password', async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+        
+        if (!newPassword || newPassword.length < 6) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Password must be at least 6 characters' 
+            });
+        }
+        
+        const user = await User.findById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        
+        // Set the new password - the pre('save') middleware will hash it
+        user.passwordHash = newPassword;
+        await user.save();
+        
+        // Log activity
+        await Activity.log({
+            type: 'user',
+            action: 'password_reset',
+            description: `Password reset for ${user.firstName} ${user.lastName} (${user.email})`,
+            userId: req.user.id,
+            userName: 'Admin',
+            targetId: user._id,
+            targetType: 'User'
+        });
+        
+        res.json({ 
+            success: true, 
+            message: `Password reset successfully for ${user.firstName} ${user.lastName}`,
+            data: {
+                email: user.email,
+                temporaryPassword: newPassword
+            }
+        });
+    } catch (error) {
+        console.error('Password reset error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 });

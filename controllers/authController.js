@@ -19,6 +19,22 @@ const normalizePhoneForWhatsApp = (phone) => {
     return normalized;
 };
 
+const normalizePhoneDigitsForWaMe = (phone) => {
+    if (!phone) return null;
+    let digits = phone.replace(/\D/g, '');
+    if (digits.startsWith('0')) {
+        digits = `27${digits.slice(1)}`;
+    }
+    return digits;
+};
+
+const getBusinessWhatsAppLink = (message) => {
+    const businessNumber = process.env.WHATSAPP_NUMBER || '27729605153';
+    const digits = normalizePhoneDigitsForWaMe(businessNumber);
+    if (!digits) return null;
+    return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
+};
+
 const generateTempPassword = () => {
     return crypto.randomBytes(5).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 10);
 };
@@ -394,32 +410,53 @@ const forgotPassword = async (req, res) => {
         user.passwordHash = tempPassword;
         user.resetPasswordToken = resetTokenHash;
         user.resetPasswordExpires = Date.now() + 60 * 60 * 1000; // 1 hour
-        await user.save({ validateBeforeSave: false });
 
         const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+        const whatsAppLink = getBusinessWhatsAppLink(`Hi Tassel Hair & Beauty Studio, I requested a password reset for ${user.email}. Please share the new password.`);
+
+        user.passwordResetHistory = user.passwordResetHistory || [];
+        user.passwordResetHistory.push({
+            requestedAt: new Date(),
+            method: 'whatsapp',
+            status: 'pending',
+            sentTo: user.phone,
+            tempPassword,
+            details: {
+                resetUrl,
+                whatsAppLink,
+                channel: 'whatsapp',
+                note: 'Admin can share this temporary password with the user via WhatsApp or direct message.'
+            }
+        });
+
         const responsePayload = {
             success: true,
-            message: 'If the details are registered, you will receive password reset instructions shortly.',
-            tempPassword: tempPassword
+            message: 'Temporary password generated. Use the password shown below to log in. You can also contact us on WhatsApp for assistance.',
+            tempPassword,
+            whatsAppLink
         };
 
-        const twilioConfigured = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER;
-        if (twilioConfigured && user.phone) {
-            const whatsappPhone = normalizePhoneForWhatsApp(user.phone);
-            if (whatsappPhone) {
-                const whatsappMessage = `Hi ${user.firstName || 'there'},\n\nYour temporary password is: ${tempPassword}\n\nUse it to log in, then change your password immediately in your profile.\n\nIf you did not request this, please contact us.`;
-                try {
-                    await sendWhatsAppMessage(whatsappPhone, whatsappMessage);
-                    responsePayload.message = 'If that email is registered, you will receive a temporary password via WhatsApp shortly.';
-                    delete responsePayload.tempPassword;
-                } catch (sendError) {
-                    console.error('Forgot password WhatsApp send failed:', sendError);
-                    responsePayload.message = 'Temporary password generated, but WhatsApp delivery failed. Use the password shown below to sign in.';
+        await user.save({ validateBeforeSave: false });
+
+        try {
+            await Activity.log({
+                type: 'user',
+                action: 'password-reset-request',
+                description: `Password reset requested for ${user.email} without Twilio.`,
+                userId: user._id,
+                userName: `${user.firstName} ${user.lastName}`,
+                targetId: user._id,
+                targetType: 'user',
+                metadata: {
+                    phone: user.phone,
+                    status: 'not-configured',
+                    method: 'whatsapp'
                 }
-            }
+            });
+        } catch (activityError) {
+            console.error('Failed to log password reset activity:', activityError);
         }
 
-        responsePayload.resetUrl = resetUrl;
         res.status(200).json(responsePayload);
     } catch (error) {
         console.error('Forgot password error:', error);

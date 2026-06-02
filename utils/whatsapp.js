@@ -4,6 +4,19 @@ const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 
+const normalizePhoneNumber = (phone) => {
+  if (!phone) return null;
+  let digits = phone.toString().replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('0')) {
+    digits = `27${digits.slice(1)}`;
+  }
+  if (!digits.startsWith('27') && digits.length === 9) {
+    digits = `27${digits}`;
+  }
+  return `+${digits}`;
+};
+
 /**
  * Initialize Twilio client if configuration is valid
  */
@@ -14,6 +27,12 @@ const initTwilioClient = () => {
 
   if (!accountSid.startsWith('AC')) {
     console.warn('Twilio config invalid: accountSid does not start with AC');
+    return null;
+  }
+
+  const normalizedSender = normalizePhoneNumber(twilioPhoneNumber);
+  if (!normalizedSender) {
+    console.warn('Twilio config invalid: TWILIO_PHONE_NUMBER is not a valid phone number');
     return null;
   }
 
@@ -32,11 +51,17 @@ const sendWhatsAppMessage = async (recipientPhoneNumber, message) => {
     throw new Error('Twilio WhatsApp is not configured or invalid');
   }
 
+  const normalizedSender = normalizePhoneNumber(twilioPhoneNumber);
+  const normalizedRecipient = normalizePhoneNumber(recipientPhoneNumber);
+  if (!normalizedRecipient) {
+    throw new Error('Invalid recipient phone number');
+  }
+
   try {
     const response = await client.messages.create({
       body: message,
-      from: `whatsapp:${twilioPhoneNumber}`,
-      to: `whatsapp:${recipientPhoneNumber}`,
+      from: `whatsapp:${normalizedSender}`,
+      to: `whatsapp:${normalizedRecipient}`,
     });
 
     console.log(`WhatsApp message sent: ${response.sid}`);
@@ -44,6 +69,8 @@ const sendWhatsAppMessage = async (recipientPhoneNumber, message) => {
       success: true,
       messageId: response.sid,
       status: response.status,
+      to: normalizedRecipient,
+      from: normalizedSender
     };
   } catch (error) {
     console.error(`Error sending WhatsApp message: ${error.message}`);
