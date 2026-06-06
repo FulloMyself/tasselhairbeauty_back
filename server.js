@@ -143,11 +143,26 @@ const server = app.listen(PORT, () => {
   console.log(`📡 Health: http://localhost:${PORT}/api/health\n`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  server.close(() => {
-    mongoose.connection.close(false, () => process.exit(0));
+// Graceful shutdown - FIXED for Mongoose 7+
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  server.close(async () => {
+    console.log('HTTP server closed');
+    try {
+      if (mongoose.connection.readyState !== 0) {
+        await mongoose.connection.close(false);
+        console.log('MongoDB connection closed');
+      }
+    } catch (err) {
+      console.error('Error closing MongoDB connection:', err);
+    }
+    process.exit(0);
   });
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
 });
 
 module.exports = app;
