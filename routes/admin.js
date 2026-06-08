@@ -770,19 +770,38 @@ router.get('/leave-requests', async (req, res) => {
 router.put('/leave-requests/:id', async (req, res) => {
     try {
         const LeaveRequest = require('../models/LeaveRequest');
+        
+        const updateData = {
+            status: req.body.status,
+            approvedBy: req.user.id,  // ← Use admin's ObjectId from JWT token
+            approvalDate: new Date(),
+            comments: req.body.comments || ''
+        };
+        
         const leave = await LeaveRequest.findByIdAndUpdate(
             req.params.id,
-            {
-                status: req.body.status,
-                approvedBy: req.body.approvedBy || 'Admin',
-                approvalDate: req.body.approvalDate || new Date(),
-                comments: req.body.comments || ''
-            },
+            updateData,
             { new: true }
         );
-        if (!leave) return res.status(404).json({ success: false, message: 'Leave request not found' });
+        
+        if (!leave) {
+            return res.status(404).json({ success: false, message: 'Leave request not found' });
+        }
+        
+        // Log activity
+        await Activity.log({
+            type: 'leave',
+            action: req.body.status,
+            description: `Leave request ${req.body.status} for staff member`,
+            userId: req.user.id,
+            userName: 'Admin',
+            targetId: leave._id,
+            targetType: 'LeaveRequest'
+        });
+        
         res.json({ success: true, message: 'Leave request updated', data: leave });
     } catch (error) {
+        console.error('Leave request update error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
