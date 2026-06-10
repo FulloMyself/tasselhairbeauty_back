@@ -220,6 +220,21 @@ router.get('/customer/stats', authenticateToken, isCustomer, async (req, res, ne
   }
 });
 
+// @route   GET /api/products/featured
+// @desc    Get featured products for homepage
+// @access  Public
+router.get('/products/featured', async (req, res) => {
+  try {
+    const Product = require('../models/Product');
+    const products = await Product.find({ isActive: true, isFeatured: true })
+      .select('name price brand image description')
+      .limit(4);
+    res.json({ success: true, data: products });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/admin/stats', authenticateToken, isAdmin, async (req, res, next) => {
   try {
     const totalCustomers = await User.countDocuments({ role: 'customer' });
@@ -834,7 +849,7 @@ router.get('/admin/loyalty/:customerId', authenticateToken, isAdmin, async (req,
     const loyalty = await CustomerLoyalty.findOne({ customer: req.params.customerId })
       .populate('customer', 'firstName lastName email')
       .populate('referredBy', 'firstName lastName');
-    
+
     if (!loyalty) {
       return res.status(404).json({ success: false, message: 'Loyalty record not found' });
     }
