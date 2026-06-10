@@ -225,12 +225,16 @@ router.get('/customer/stats', authenticateToken, isCustomer, async (req, res, ne
 // @access  Public
 router.get('/products/featured', async (req, res) => {
   try {
-    const Product = require('../models/Product');
-    const products = await Product.find({ isActive: true, isFeatured: true })
-      .select('name price brand image description')
+    const products = await Product.find({
+      isActive: true,
+      isFeatured: true
+    })
+      .select('name price brand image description category')
       .limit(4);
+
     res.json({ success: true, data: products });
   } catch (error) {
+    console.error('Featured products error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
