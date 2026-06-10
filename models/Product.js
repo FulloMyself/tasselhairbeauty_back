@@ -30,6 +30,13 @@ const productSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  imageUrl: {
+    type: String,
+    default: null
+  },
+  images: [{
+    type: String
+  }],
   brand: {
     type: String,
     trim: true
@@ -43,15 +50,36 @@ const productSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
-  }
+  },
+  isFeatured: {
+    type: Boolean,
+    default: false
+  },
+  tags: [{
+    type: String,
+    trim: true
+  }]
 }, {
   timestamps: true
 });
 
+// Virtual for image URL that falls back to placeholder
+productSchema.virtual('displayImage').get(function() {
+  if (this.imageUrl) return this.imageUrl;
+  if (this.image) return this.image;
+  if (this.images && this.images.length > 0) return this.images[0];
+  return null;
+});
+
+// Ensure virtuals are included in JSON output
+productSchema.set('toJSON', { virtuals: true });
+productSchema.set('toObject', { virtuals: true });
+
 // Indexes
-productSchema.index({ name: 'text', description: 'text', category: 'text' });
+productSchema.index({ name: 'text', description: 'text', category: 'text', brand: 'text' });
 productSchema.index({ category: 1 });
 productSchema.index({ isActive: 1 });
+productSchema.index({ isFeatured: 1 });
 productSchema.index({ sku: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Product', productSchema);
