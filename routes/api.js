@@ -38,6 +38,25 @@ router.get('/services/:id', async (req, res, next) => {
   }
 });
 
+// @route   GET /api/products/featured
+// @desc    Get featured products for homepage
+// @access  Public
+router.get('/products/featured', async (req, res) => {
+  try {
+    const products = await Product.find({
+      isActive: true,
+      isFeatured: true
+    })
+      .select('name price brand image description category')
+      .limit(4);
+
+    res.json({ success: true, data: products });
+  } catch (error) {
+    console.error('Featured products error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/products', async (req, res, next) => {
   try {
     const products = await Product.find({ isActive: true }).lean();
@@ -220,24 +239,6 @@ router.get('/customer/stats', authenticateToken, isCustomer, async (req, res, ne
   }
 });
 
-// @route   GET /api/products/featured
-// @desc    Get featured products for homepage
-// @access  Public
-router.get('/products/featured', async (req, res) => {
-  try {
-    const products = await Product.find({
-      isActive: true,
-      isFeatured: true
-    })
-      .select('name price brand image description category')
-      .limit(4);
-
-    res.json({ success: true, data: products });
-  } catch (error) {
-    console.error('Featured products error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
 
 router.get('/admin/stats', authenticateToken, isAdmin, async (req, res, next) => {
   try {
